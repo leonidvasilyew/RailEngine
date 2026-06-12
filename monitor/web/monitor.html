@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Rail Monitor</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{touch-action:none;overscroll-behavior:none}
+body{background:#0a0e17;color:#c8d6e5;font-family:system-ui;overflow:hidden;height:100vh}
+canvas{display:block;width:100%;height:100%;touch-action:none}
+#info{position:fixed;top:12px;left:12px;font:11px system-ui;color:#576574;line-height:1.6;z-index:10}
+#conn{position:fixed;top:12px;right:12px;font:11px system-ui;z-index:10;
+  padding:3px 9px;border-radius:6px;background:rgba(15,20,35,.9);border:1px solid #2a3a5a}
+#conn.ok{color:#2ecc71}#conn.bad{color:#e74c3c}
+
+/* Панель управления */
+#panel{position:fixed;top:0;right:0;height:100vh;width:300px;z-index:9;
+  background:rgba(13,18,30,.94);border-left:1px solid #1e2a44;
+  padding:46px 12px 12px;overflow-y:auto;display:flex;flex-direction:column;gap:10px}
+#panel.hidden{transform:translateX(100%)}
+#panel h4{font-size:12px;color:#7f8c8d;text-transform:uppercase;letter-spacing:.5px;margin-top:4px}
+.card{border:1px solid #1e2a44;border-radius:10px;padding:9px;background:rgba(20,28,46,.6)}
+.tname{font-weight:bold;font-size:14px}
+.tmeta{font:11px system-ui;color:#7f8c8d;margin:3px 0 6px;font-variant-numeric:tabular-nums}
+input[type=range]{width:100%;margin:6px 0;height:8px;border-radius:4px;
+  -webkit-appearance:none;appearance:none;background:#1a2336;outline:none;cursor:pointer}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
+  width:16px;height:16px;border-radius:50%;background:#c8d6e5;border:2px solid #3498db;cursor:pointer}
+input[type=range]::-moz-range-thumb{width:16px;height:16px;border-radius:50%;
+  background:#c8d6e5;border:2px solid #3498db;cursor:pointer}
+input[type=range]::-moz-range-track{background:transparent;height:8px}
+.btn{background:#22304a;color:#c8d6e5;border:1px solid #3a4d72;border-radius:6px;
+  padding:4px 9px;font:12px system-ui;cursor:pointer}
+.btn:hover{background:#2c3d5e}.btn.active{background:#2980b9;border-color:#3498db}
+.btn.red{background:#5a2230;border-color:#7a3142}.btn.red:hover{background:#73303f}
+.rowbtns{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.num{width:58px;background:#0f1626;color:#c8d6e5;border:1px solid #3a4d72;border-radius:4px;padding:3px}
+.swrow{display:flex;justify-content:space-between;align-items:center;margin:4px 0;font:12px system-ui}
+.pill{font:10px system-ui;padding:1px 7px;border-radius:8px}
+.pill.s{background:#1d3a2a;color:#2ecc71}.pill.b{background:#3a2a1d;color:#e67e22}
+#toggle{position:fixed;top:12px;right:316px;z-index:11}
+#toggle.collapsed{right:12px}
+#editlink{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:11;
+  text-decoration:none;display:inline-flex;align-items:center;height:30px;padding:0 12px}
+.placing{cursor:crosshair}
+.hint{font:11px system-ui;color:#8d6e3a;background:#241d10;border:1px solid #3a2e15;
+  border-radius:6px;padding:6px 8px}
+</style></head><body>
+<div id="info"></div>
+<div id="conn" class="bad">● offline</div>
+<a id="editlink" class="btn" href="/editor" title="Редактор графа">✎ Edit</a>
+<button id="toggle" class="btn">☰</button>
+<canvas id="c"></canvas>
+
+<div id="panel">
+  <h4>Добавить поезд</h4>
+  <div class="card">
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+      длина <input class="num" id="np_len" value="20">
+      vmax <input class="num" id="np_vmax" value="12">
+    </div>
+    <div class="rowbtns">
+      <button class="btn" id="np_dir">направление: +1</button>
+      <button class="btn" id="np_place">поставить на ребро</button>
+    </div>
+    <div class="hint" id="np_hint" style="display:none;margin-top:6px">
+      Клик по ребру — поставить поезд. Esc — отмена.</div>
+  </div>
+
+  <h4>Поезда</h4>
+  <div id="trains"></div>
+
+  <h4>Стрелки</h4>
+  <div id="switches" class="card"></div>
+</div>
+
+<script>
+// ── Соединение ───────────────────────────────────────────────────────────
+let topo=null, pos={}, latest=null, sensorFlash={}, coords=null;
+const conn=document.getElementById('conn');
+let ws=null;
+function connect(){
+  ws=new WebSocket(`ws://${location.host}/ws`);
+  ws.onopen=()=>{conn.textContent='● online';conn.className='ok'};
+  ws.onclose=()=>{conn.textContent='● offline';conn.className='bad';setTimeout(connect,1000)};
+  ws.onmessage=e=>{
+    const m=JSON.parse(e.data);
+    if(m.type==='init'){
+      // Сброс при (пере)инициализации — граф мог смениться (кнопка «Применить»).
+      for(const id of Object.keys(trainRows)){trainRows[id].el.remove();delete trainRows[id];}
+      sensorFlash={};
+      topo=m.topology; coords=m.coords||null; buildLayout(); latest=m.state; rebuildPanel(true);
+    }
+    else if(m.type==='state'){
+      if(!topo) return;   // состояние пришло раньше init — игнорируем (рассинхрон)
+      latest=m.state;
+      if(m.events) for(const ev of m.events) if(ev.type==='sensor') sensorFlash[ev.sensor]=performance.now()+400;
+      rebuildPanel(false);
+    }
+  };
+}
+function send(o){ if(ws&&ws.readyState===1) ws.send(JSON.stringify(o)); }
+
+// ── Canvas / камера ──────────────────────────────────────────────────────
+const cv=document.getElementById('c'), cx=cv.getContext('2d');
+let W,H;const DPR=window.devicePixelRatio||1;
+function resize(){W=innerWidth;H=innerHeight;cv.width=W*DPR;cv.height=H*DPR;
+  cv.style.width=W+'px';cv.style.height=H+'px';cx.setTransform(DPR,0,0,DPR,0,0);}
+resize();
+let cam={x:0,y:0,zoom:1};
+function w2s(wx,wy){return{x:wx*cam.zoom+cam.x,y:wy*cam.zoom+cam.y}}
+function s2w(sx,sy){return{x:(sx-cam.x)/cam.zoom,y:(sy-cam.y)/cam.zoom}}
+
+// ── Force-layout (из visualize.py) ───────────────────────────────────────
+function hash(n){return(n*2654435761)>>>0}
+let nids=[],eids=[];
+function buildLayout(){
+  nids=Object.keys(topo.nodes).map(Number);
+  eids=Object.keys(topo.edges).map(Number);
+  pos={};
+  nids.forEach(id=>{let h=hash(id);
+    pos[id]={x:((h&0xffff)/0xffff-.5)*300,y:(((h>>>16)&0xffff)/0xffff-.5)*300,vx:0,vy:0};});
+  // Если есть сохранённые координаты (из редактора) — используем их, чтобы
+  // положение не сбивалось, и пропускаем силовую раскладку.
+  if(coords && Object.keys(coords).length){
+    nids.forEach(id=>{const c=coords[id]||coords[String(id)];
+      if(c){pos[id].x=c[0];pos[id].y=c[1];}});
+    fitToScreen();
+    return;
+  }
+  const adjacent=new Set();
+  eids.forEach(eid=>{const e=topo.edges[eid];
+    adjacent.add(Math.min(e.node_a,e.node_b)+','+Math.max(e.node_a,e.node_b));});
+  const isAdj=(a,b)=>adjacent.has(Math.min(a,b)+','+Math.max(a,b));
+  const degree={},deadNb={};
+  nids.forEach(id=>{const n=topo.nodes[id];const c=n.edges.filter(e=>e>=0);
+    degree[id]=c.length;
+    if(c.length===1){const e=topo.edges[c[0]];deadNb[id]=e.node_a===id?e.node_b:e.node_a;}});
+  function segInt(x1,y1,x2,y2,x3,y3,x4,y4){const d=(x1-x2)*(y3-y4)-(y1-y2)*(x3-x4);
+    if(Math.abs(d)<1e-10)return false;
+    const t=((x1-x3)*(y3-y4)-(y1-y3)*(x3-x4))/d,u=-((x1-x2)*(y1-y3)-(y1-y2)*(x1-x3))/d;
+    return t>.05&&t<.95&&u>.05&&u<.95;}
+  for(let it=0;it<600;it++){
+    for(let i=0;i<nids.length;i++)for(let j=i+1;j<nids.length;j++){
+      if(isAdj(nids[i],nids[j]))continue;
+      const a=pos[nids[i]],b=pos[nids[j]];let dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy)||1;
+      let f=10000/(d*d);a.vx-=dx/d*f;a.vy-=dy/d*f;b.vx+=dx/d*f;b.vy+=dy/d*f;}
+    eids.forEach(eid=>{const e=topo.edges[eid],a=pos[e.node_a],b=pos[e.node_b];
+      let dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy)||1,f=(d-e.length)*.08;
+      a.vx+=dx/d*f;a.vy+=dy/d*f;b.vx-=dx/d*f;b.vy-=dy/d*f;});
+    for(let i=0;i<eids.length;i++)for(let j=i+1;j<eids.length;j++){
+      const e1=topo.edges[eids[i]],e2=topo.edges[eids[j]];
+      if(e1.node_a===e2.node_a||e1.node_a===e2.node_b||e1.node_b===e2.node_a||e1.node_b===e2.node_b)continue;
+      const a1=pos[e1.node_a],b1=pos[e1.node_b],a2=pos[e2.node_a],b2=pos[e2.node_b];
+      if(segInt(a1.x,a1.y,b1.x,b1.y,a2.x,a2.y,b2.x,b2.y)){
+        let mx1=(a1.x+b1.x)/2,my1=(a1.y+b1.y)/2,mx2=(a2.x+b2.x)/2,my2=(a2.y+b2.y)/2;
+        let dx=mx2-mx1,dy=my2-my1,d=Math.hypot(dx,dy)||1,f=50;
+        a1.vx-=dx/d*f;a1.vy-=dy/d*f;b1.vx-=dx/d*f;b1.vy-=dy/d*f;
+        a2.vx+=dx/d*f;a2.vy+=dy/d*f;b2.vx+=dx/d*f;b2.vy+=dy/d*f;}}
+    nids.forEach(id=>{if(degree[id]!==1)return;const nb=deadNb[id];if(nb===undefined)return;
+      const p=pos[id],q=pos[nb];let dx=p.x-q.x,dy=p.y-q.y,d=Math.hypot(dx,dy)||1,f=Math.min(2,60/d);
+      p.vx+=dx/d*f;p.vy+=dy/d*f;});
+    let gcx=0,gcy=0;nids.forEach(id=>{gcx+=pos[id].x;gcy+=pos[id].y});
+    gcx/=nids.length||1;gcy/=nids.length||1;
+    nids.forEach(id=>{pos[id].vx+=(gcx-pos[id].x)*.0008;pos[id].vy+=(gcy-pos[id].y)*.0008;
+      pos[id].vx*=.82;pos[id].vy*=.82;pos[id].x+=pos[id].vx;pos[id].y+=pos[id].vy;});
+  }
+  fitToScreen();
+}
+function fitToScreen(){
+  if(!nids.length)return;
+  let x0=Infinity,x1=-Infinity,y0=Infinity,y1=-Infinity;
+  nids.forEach(id=>{x0=Math.min(x0,pos[id].x);x1=Math.max(x1,pos[id].x);
+    y0=Math.min(y0,pos[id].y);y1=Math.max(y1,pos[id].y)});
+  const p=70;cam.zoom=Math.min((W-p*2)/(x1-x0||1),(H-p*2)/(y1-y0||1));
+  cam.x=W/2-(x0+x1)/2*cam.zoom;cam.y=H/2-(y0+y1)/2*cam.zoom;
+}
+addEventListener('resize',()=>{resize();fitToScreen()});
+
+// pan/zoom
+let dragging=false,dragX=0,dragY=0,downX=0,downY=0,didDrag=false;
+cv.addEventListener('mousedown',e=>{if(e.button===0){dragging=true;dragX=e.clientX;dragY=e.clientY;downX=e.clientX;downY=e.clientY;didDrag=false;}});
+addEventListener('mousemove',e=>{if(!dragging)return;
+  if(Math.abs(e.clientX-downX)+Math.abs(e.clientY-downY)>4)didDrag=true;
+  cam.x+=e.clientX-dragX;cam.y+=e.clientY-dragY;dragX=e.clientX;dragY=e.clientY;});
+addEventListener('mouseup',e=>{dragging=false; if(!didDrag) onClick(e.clientX,e.clientY);});
+cv.addEventListener('wheel',e=>{e.preventDefault();const f=e.deltaY<0?1.15:1/1.15;
+  cam.x=e.clientX-(e.clientX-cam.x)*f;cam.y=e.clientY-(e.clientY-cam.y)*f;cam.zoom*=f;},{passive:false});
+
+// ── Геометрия ────────────────────────────────────────────────────────────
+function sToWorld(eid,s){const e=topo&&topo.edges[eid]; if(!e)return null;
+  const a=pos[e.node_a],b=pos[e.node_b]; if(!a||!b)return null;
+  return{x:a.x+(b.x-a.x)*s,y:a.y+(b.y-a.y)*s};}
+function nearestEdge(wx,wy){
+  let best=null,bestD=Infinity;
+  eids.forEach(eid=>{const e=topo.edges[eid],a=pos[e.node_a],b=pos[e.node_b];
+    const dx=b.x-a.x,dy=b.y-a.y,L2=dx*dx+dy*dy||1;
+    let t=((wx-a.x)*dx+(wy-a.y)*dy)/L2;t=Math.max(0,Math.min(1,t));
+    const px=a.x+dx*t,py=a.y+dy*t,d=Math.hypot(wx-px,wy-py);
+    if(d<bestD){bestD=d;best={eid,s:t,d};}});
+  return best;
+}
+function nodeAt(sx,sy){
+  for(const id of nids){const p=w2s(pos[id].x,pos[id].y);
+    if(Math.hypot(sx-p.x,sy-p.y)<14) return id;}
+  return null;
+}
+function sensorAt(sx,sy){
+  if(!latest)return null;
+  for(const sn of latest.sensors){
+    const wp=sToWorld(sn.edge_id,sn.position); if(!wp)continue; const p=w2s(wp.x,wp.y);
+    if(Math.hypot(sx-p.x,sy-p.y)<14) return sn;}
+  return null;
+}
+// Двойной клик по датчику → срабатывание: ближайший поезд на ребре
+// корректирует позицию (fire_sensor с авто-привязкой на сервере).
+cv.addEventListener('dblclick',e=>{
+  const sn=sensorAt(e.clientX,e.clientY);
+  if(sn){ sensorFlash[sn.id]=performance.now()+400; send({cmd:'fire_sensor',sensor:sn.id}); }
+});
+
+// ── Клики: тоггл стрелки или постановка поезда ───────────────────────────
+let placing=false, placeDir=1;
+function onClick(sx,sy){
+  if(placing){
+    const w=s2w(sx,sy),ne=nearestEdge(w.x,w.y);
+    if(ne&&ne.d*cam.zoom<40){
+      send({cmd:'place_train',edge:ne.eid,position:ne.s,direction:placeDir,
+        length:+document.getElementById('np_len').value,
+        max_speed:+document.getElementById('np_vmax').value,
+        color:nextColor()});
+    }
+    setPlacing(false);
+    return;
+  }
+  const nid=nodeAt(sx,sy);
+  if(nid!==null && latest && (String(nid) in latest.switches)) send({cmd:'toggle_switch',node:nid});
+}
+const COLORS=['#e74c3c','#3498db','#2ecc71','#f1c40f','#9b59b6','#1abc9c','#e67e22'];
+function nextColor(){const used=(latest?latest.trains.length:0);return COLORS[used%COLORS.length];}
+function setPlacing(v){placing=v;
+  document.getElementById('np_place').classList.toggle('active',v);
+  document.getElementById('np_hint').style.display=v?'block':'none';
+  document.body.classList.toggle('placing',v);}
+document.getElementById('np_place').onclick=()=>setPlacing(!placing);
+document.getElementById('np_dir').onclick=()=>{placeDir=-placeDir;
+  document.getElementById('np_dir').textContent='направление: '+(placeDir>0?'+1':'-1');};
+addEventListener('keydown',e=>{if(e.key==='Escape')setPlacing(false);});
+
+// ── Отрисовка ────────────────────────────────────────────────────────────
+function draw(){
+  cx.clearRect(0,0,W,H);
+  if(!topo)return;
+  const z=cam.zoom;
+  // рёбра
+  eids.forEach(eid=>{const e=topo.edges[eid],a=w2s(pos[e.node_a].x,pos[e.node_a].y),b=w2s(pos[e.node_b].x,pos[e.node_b].y);
+    cx.beginPath();cx.moveTo(a.x,a.y);cx.lineTo(b.x,b.y);
+    cx.strokeStyle='rgba(100,120,160,.35)';cx.lineWidth=Math.max(1,3*z/2);cx.stroke();
+    if(z>.3){cx.font=`${Math.max(8,10*z/2)}px system-ui`;cx.fillStyle='rgba(100,120,160,.45)';
+      cx.textAlign='center';cx.fillText(e.name,(a.x+b.x)/2,(a.y+b.y)/2-8*z/2);}});
+  // датчики
+  if(latest) latest.sensors.forEach(sn=>{
+    const wp=sToWorld(sn.edge_id,sn.position); if(!wp)return; const p=w2s(wp.x,wp.y);
+    const flash=sensorFlash[sn.id]&&performance.now()<sensorFlash[sn.id];
+    const r=Math.max(3,5*z/2);
+    cx.beginPath();cx.moveTo(p.x,p.y-r);cx.lineTo(p.x+r,p.y);cx.lineTo(p.x,p.y+r);cx.lineTo(p.x-r,p.y);cx.closePath();
+    cx.fillStyle=flash?'#f1c40f':'rgba(241,196,15,.5)';cx.fill();
+    cx.strokeStyle='#f39c12';cx.lineWidth=1.2;cx.stroke();
+    if(z>.4){cx.font=`${Math.max(7,8*z/2)}px system-ui`;cx.fillStyle='#b8902f';cx.textAlign='center';
+      cx.fillText(sn.name,p.x,p.y-r-3);}});
+  // узлы
+  const swState=latest?latest.switches:{};
+  nids.forEach(nid=>{const n=topo.nodes[nid],p=w2s(pos[nid].x,pos[nid].y),sz=Math.max(3,8*z/2);
+    cx.beginPath();
+    if(n.type==='Switch'){cx.moveTo(p.x,p.y-sz);cx.lineTo(p.x+sz,p.y);cx.lineTo(p.x,p.y+sz);cx.lineTo(p.x-sz,p.y);cx.closePath();cx.fillStyle='rgba(46,204,113,.55)';}
+    else if(n.type==='Turntable'){cx.arc(p.x,p.y,sz,0,7);cx.fillStyle='rgba(155,89,182,.5)';}
+    else if(n.port_count<=1){cx.rect(p.x-sz*.75,p.y-sz*.75,sz*1.5,sz*1.5);cx.fillStyle='rgba(231,76,60,.5)';}
+    else{cx.arc(p.x,p.y,sz*.7,0,7);cx.fillStyle='rgba(52,152,219,.5)';}
+    cx.fill();cx.strokeStyle='rgba(200,214,229,.4)';cx.lineWidth=1.5;cx.stroke();
+    // активная ветка стрелки
+    if(n.type==='Switch' && (String(nid) in swState)){
+      const activePort=swState[nid]; // 1=STRAIGHT,2=BRANCH
+      const eid=n.edges[activePort];
+      const wp=eid>=0?sToWorld(eid,0.12):null;
+      if(wp){const tp=w2s(wp.x,wp.y);
+        cx.beginPath();cx.moveTo(p.x,p.y);cx.lineTo(tp.x,tp.y);
+        cx.strokeStyle='#2ecc71';cx.lineWidth=Math.max(2,3.5*z/2);cx.stroke();}
+    }
+    if(z>.3){cx.font=`${Math.max(8,11*z/2)}px system-ui`;cx.fillStyle='#8395a7';cx.textAlign='center';
+      cx.fillText(n.name,p.x,p.y-sz-4);}});
+  // поезда
+  if(latest) latest.trains.forEach(t=>{
+    if(!t.body||!t.body.length)return;
+    const pts=t.body.map(b=>{const w=sToWorld(b.edge_id,b.s);return w?w2s(w.x,w.y):null;}).filter(Boolean);
+    if(!pts.length)return;
+    if(pts.length>=2){cx.beginPath();cx.moveTo(pts[0].x,pts[0].y);
+      for(let i=1;i<pts.length;i++)cx.lineTo(pts[i].x,pts[i].y);
+      cx.strokeStyle=t.color;cx.lineWidth=Math.max(2,6*z/2);cx.lineCap='round';cx.lineJoin='round';cx.stroke();}
+    const hp=pts[0]; // голова = первый элемент body
+    const glowR=Math.max(6,14*z/2),g=cx.createRadialGradient(hp.x,hp.y,0,hp.x,hp.y,glowR);
+    g.addColorStop(0,t.color+'50');g.addColorStop(1,t.color+'00');
+    cx.beginPath();cx.arc(hp.x,hp.y,glowR,0,7);cx.fillStyle=g;cx.fill();
+    const moving=Math.abs(t.v)>0.05;
+    const r=Math.max(2,(moving?4:3)*z/2);
+    cx.beginPath();cx.arc(hp.x,hp.y,r,0,7);cx.fillStyle=t.color;cx.fill();
+    cx.strokeStyle='#fff';cx.lineWidth=1;cx.stroke();
+    if(t.stopped_reason){cx.strokeStyle='#e74c3c';cx.lineWidth=2;
+      cx.beginPath();cx.arc(hp.x,hp.y,r+4,0,7);cx.stroke();}
+    if(z>.3){cx.font=`bold ${Math.max(8,11*z/2)}px system-ui`;cx.fillStyle=t.color;cx.textAlign='center';
+      cx.fillText(`${t.name} ${t.v.toFixed(1)}`,hp.x,hp.y-r-6);}
+  });
+}
+// Цикл отрисовки НЕубиваемый: исключение в одном кадре (например, кратковременный
+// рассинхрон topo/state сразу после «Применить») не должно навсегда останавливать
+// рендер — иначе постановка поездов/перевод стрелок не видны до перезагрузки.
+function frame(){ try{ draw(); }catch(e){ if(window.console) console.error('draw error', e); } requestAnimationFrame(frame); }
+requestAnimationFrame(frame);
+
+// ── Панель ───────────────────────────────────────────────────────────────
+const trainRows={}; // id -> {el, vspan, slider}
+// Заливка джойстика ОТ ЦЕНТРА (0), а не слева.
+function paintSlider(sl){
+  const mn=+sl.min, mx=+sl.max, v=+sl.value;
+  const p=(v-mn)/(mx-mn)*100;          // позиция бегунка, %
+  const lo=Math.min(50,p), hi=Math.max(50,p);
+  const fill='#3498db', track='#1a2336';
+  sl.style.background=
+    `linear-gradient(90deg, ${track} ${lo}%, ${fill} ${lo}%, ${fill} ${hi}%, ${track} ${hi}%)`;
+}
+function rebuildPanel(force){
+  if(!latest||!topo)return;
+  const cont=document.getElementById('trains');
+  const ids=new Set(latest.trains.map(t=>t.id));
+  // удалить исчезнувшие
+  for(const id of Object.keys(trainRows)) if(!ids.has(+id)){trainRows[id].el.remove();delete trainRows[id];}
+  latest.trains.forEach(t=>{
+    let row=trainRows[t.id];
+    if(!row){
+      const vmax=(t.max_speed&&isFinite(t.max_speed))?t.max_speed:20;
+      const el=document.createElement('div');el.className='card';
+      el.innerHTML=
+        `<div class="tname" style="color:${t.color}">${t.name}</div>`+
+        `<div class="tmeta"></div>`+
+        `<input type="range" min="${-vmax}" max="${vmax}" step="0.1" value="${t.v_target}">`+
+        `<div class="rowbtns">`+
+        `<button class="btn stop">стоп</button>`+
+        `<button class="btn rev" title="развернуть (обратная скорость)">⇄ назад</button>`+
+        `<button class="btn red rm">убрать</button></div>`;
+      cont.appendChild(el);
+      const slider=el.querySelector('input'),meta=el.querySelector('.tmeta');
+      slider.oninput=()=>{paintSlider(slider);send({cmd:'set_speed',train:t.id,v_target:+slider.value});};
+      el.querySelector('.stop').onclick=()=>{slider.value=0;paintSlider(slider);send({cmd:'set_speed',train:t.id,v_target:0});};
+      // Разворот: команда в СТОРОНУ, ПРОТИВОПОЛОЖНУЮ текущему направлению по
+      // схеме. Направление берём из свежего состояния поезда (v_target, иначе
+      // ориентация face). Работает в обе стороны: + → − и − → +.
+      el.querySelector('.rev').onclick=()=>{
+        const cur=latest&&latest.trains.find(x=>x.id===t.id);
+        const vt=cur?cur.v_target:+slider.value, face=cur?cur.face:1;
+        const dir=(vt>0.001)?1:((vt<-0.001)?-1:face);   // текущее направление
+        const mag=Math.abs(+slider.value)>0.2?Math.abs(+slider.value):3;
+        send({cmd:'set_speed',train:t.id,v_target:-dir*mag});};
+      el.querySelector('.rm').onclick=()=>send({cmd:'remove_train',train:t.id});
+      paintSlider(slider);
+      row={el,meta,slider};trainRows[t.id]=row;
+    }
+    row.meta.textContent=`e${t.edge_id}  s=${t.s.toFixed(3)}  v=${t.v.toFixed(2)} м/с`+
+      (t.stopped_reason?`  ⛔ ${t.stopped_reason}`:'');
+    if(document.activeElement!==row.slider){row.slider.value=t.v_target;paintSlider(row.slider);}
+  });
+  // стрелки
+  const sd=document.getElementById('switches');
+  const cur=JSON.stringify(latest.switches);
+  if(sd._sig!==cur){sd._sig=cur;sd.innerHTML='';
+    Object.entries(latest.switches).forEach(([nid,p])=>{
+      const n=topo.nodes[nid];const row=document.createElement('div');row.className='swrow';
+      row.innerHTML=`<span>${n?n.name:'n'+nid}</span>`+
+        `<span><span class="pill ${p===1?'s':'b'}">${p===1?'STRAIGHT':'BRANCH'}</span> `+
+        `<button class="btn" data-n="${nid}">⇄</button></span>`;
+      sd.appendChild(row);
+      row.querySelector('button').onclick=()=>send({cmd:'toggle_switch',node:+nid});
+    });
+    if(!Object.keys(latest.switches).length) sd.innerHTML='<span class="tmeta">нет стрелок</span>';
+  }
+  document.getElementById('info').innerHTML=
+    `Узлы: ${nids.length} | Рёбра: ${eids.length} | Поезда: ${latest.trains.length} | t=${latest.time.toFixed(1)}s`+
+    `<br><span style="color:#576574">Колесо: зум · ЛКМ: панорама · клик по стрелке: ⇄ · 2×клик по датчику: коррекция</span>`;
+}
+
+// свернуть панель
+document.getElementById('toggle').onclick=()=>{
+  const pn=document.getElementById('panel'),tg=document.getElementById('toggle');
+  pn.classList.toggle('hidden');tg.classList.toggle('collapsed');};
+
+connect();
+</script></body></html>

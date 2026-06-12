@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Rail Editor</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{touch-action:none;overscroll-behavior:none}
+body{background:#0a0e17;color:#c8d6e5;font-family:system-ui;overflow:hidden;height:100vh}
+canvas{display:block;width:100%;height:100%;touch-action:none}
+.btn{background:#22304a;color:#c8d6e5;border:1px solid #3a4d72;border-radius:6px;
+  padding:5px 10px;font:13px system-ui;cursor:pointer;text-decoration:none;
+  display:inline-flex;align-items:center;gap:5px}
+.btn:hover{background:#2c3d5e}.btn.on{background:#2980b9;border-color:#3498db;color:#fff}
+.btn.green{background:#1e6b43;border-color:#2ecc71}.btn.green:hover{background:#258050}
+.btn.red{background:#5a2230;border-color:#7a3142}.btn.red:hover{background:#73303f}
+#topbar{position:fixed;top:0;left:0;right:0;z-index:10;display:flex;gap:8px;align-items:center;
+  padding:8px 12px;background:rgba(13,18,30,.92);border-bottom:1px solid #1e2a44;flex-wrap:wrap}
+#tools{display:flex;gap:6px;margin-left:6px}
+#tools.hidden{display:none}
+.sep{width:1px;height:24px;background:#2a3a5a;margin:0 4px}
+#status{margin-left:auto;font:12px system-ui;color:#7f8c8d}
+#status.ok{color:#2ecc71}#status.err{color:#e74c3c}
+#props{position:fixed;top:54px;right:0;width:280px;max-height:calc(100vh - 60px);overflow-y:auto;
+  z-index:9;background:rgba(13,18,30,.94);border-left:1px solid #1e2a44;padding:12px;display:none}
+#props.show{display:block}
+#props h4{font-size:12px;color:#7f8c8d;text-transform:uppercase;margin-bottom:8px}
+#props label{display:block;font:11px system-ui;color:#8d9bb0;margin:8px 0 3px}
+#props input,#props select{width:100%;background:#0f1626;color:#c8d6e5;border:1px solid #3a4d72;
+  border-radius:5px;padding:5px}
+.kind{display:inline-block;font:10px system-ui;padding:1px 8px;border-radius:8px;margin-left:6px}
+.kind.sw{background:#1d3a2a;color:#2ecc71}.kind.nd{background:#23304a;color:#5b9bd5}
+#hint{position:fixed;bottom:10px;left:50%;transform:translateX(-50%);z-index:9;
+  font:11px system-ui;color:#7f8c8d;background:rgba(15,20,35,.85);border:1px solid #2a3a5a;
+  border-radius:8px;padding:5px 12px;max-width:90vw;text-align:center}
+</style></head><body>
+<div id="topbar">
+  <a class="btn" href="/" title="К монитору">▶ Монитор</a>
+  <button class="btn" id="mode">Edit</button>
+  <div id="tools">
+    <button class="btn tool on" data-tool="select" title="Выбор/перемещение">⬚ Выбор</button>
+    <button class="btn tool" data-tool="node" title="Поставить точку">＋ Точка</button>
+    <button class="btn tool" data-tool="edge" title="Соединить рёбром">／ Ребро</button>
+    <button class="btn tool" data-tool="sensor" title="Поставить датчик на ребро">◇ Датчик</button>
+    <button class="btn tool" data-tool="delete" title="Удалить">🗑 Удалить</button>
+    <span class="sep"></span>
+    <button class="btn" id="springs" title="Пружины: длина ребра стягивает/расталкивает точки">⇄ Пружины</button>
+  </div>
+  <span class="sep"></span>
+  <button class="btn green" id="apply" title="Загрузить граф в монитор">✓ Применить</button>
+  <button class="btn" id="cancel" title="Откатить к текущему графу монитора">↶ Отменить</button>
+  <span class="sep"></span>
+  <button class="btn" id="exp_graph" title="Экспорт структуры графа">⬇ Граф</button>
+  <button class="btn" id="exp_map" title="Экспорт графа с координатами">⬇ Граф+коорд</button>
+  <button class="btn" id="imp" title="Импорт JSON">⬆ Импорт</button>
+  <input type="file" id="impfile" accept="application/json" style="display:none">
+  <span id="status"></span>
+</div>
+
+<canvas id="c"></canvas>
+<div id="props"></div>
+<div id="hint"></div>
+
+<script>
+// ── Модель графа ─────────────────────────────────────────────────────────
+let G = {nodes:{}, edges:{}, sensors:{}};  // sensors[id]={id,edge,position,name,radius}
+let nextNid=1, nextEid=1, nextSid=1;
+let springs=false;              // пружинная релаксация длин
+let editMode=true;
+let tool='select';
+let sel=null;                   // {type:'node'|'edge', id}
+
+function recalcIds(){
+  nextNid = Math.max(0,...Object.keys(G.nodes).map(Number))+1;
+  nextEid = Math.max(0,...Object.keys(G.edges).map(Number))+1;
+  nextSid = Math.max(0,...Object.keys(G.sensors).map(Number))+1;
+}
+function nodeDegree(id){
+  let d=0; for(const e in G.edges) if(G.edges[e].a==id||G.edges[e].b==id) d++; return d;
+}
+function incidentEdges(id){
+  return Object.values(G.edges).filter(e=>e.a==id||e.b==id);
+}
+
+// Превращение точки в стрелку при 3 рёбрах (и обратно).
+function reclassify(id){
+  const n=G.nodes[id]; if(!n) return;
+  const inc=incidentEdges(id);
+  if(inc.length===3){
+    if(n.kind!=='switch'){
+      n.kind='switch';
+      n.ports={point:inc[0].id, straight:inc[1].id, branch:inc[2].id};
+    } else {
+      // сохранить валидность ports после изменений рёбер
+      const ids=inc.map(e=>e.id);
+      let p=n.ports||{};
+      if(!ids.includes(p.point)||!ids.includes(p.straight)||!ids.includes(p.branch)||
+         new Set([p.point,p.straight,p.branch]).size!==3){
+        n.ports={point:inc[0].id, straight:inc[1].id, branch:inc[2].id};
+      }
+    }
+  } else {
+    n.kind='node'; delete n.ports;
+  }
+}
+
+function addNode(x,y){
+  const id=nextNid++;
+  G.nodes[id]={id, name:'n'+id, x, y, kind:'node'};
+  return id;
+}
+function addEdge(a,b,length){
+  if(a===b) return null;
+  for(const e in G.edges){const e2=G.edges[e];
+    if((e2.a==a&&e2.b==b)||(e2.a==b&&e2.b==a)) return null;}  // без дублей
+  const id=nextEid++;
+  const dist=Math.hypot(G.nodes[b].x-G.nodes[a].x, G.nodes[b].y-G.nodes[a].y);
+  G.edges[id]={id, a, b, length:length!=null?length:Math.max(1,Math.round(dist)), name:'e'+id};
+  reclassify(a); reclassify(b);
+  return id;
+}
+function removeNode(id){
+  incidentEdges(id).forEach(e=>removeEdge(e.id, true));
+  delete G.nodes[id];
+}
+function removeEdge(id, skipRe){
+  const e=G.edges[id]; if(!e) return;
+  const a=e.a, b=e.b; delete G.edges[id];
+  // удалить датчики на этом ребре
+  Object.values(G.sensors).filter(s=>s.edge==id).forEach(s=>delete G.sensors[s.id]);
+  if(!skipRe){reclassify(a); reclassify(b);}
+}
+function addSensor(edge, position){
+  const id=nextSid++;
+  G.sensors[id]={id, edge, position, name:'S'+id, radius:20};
+  return id;
+}
+function removeSensor(id){ delete G.sensors[id]; }
+
+// ── Камера / canvas ──────────────────────────────────────────────────────
+const cv=document.getElementById('c'), cx=cv.getContext('2d');
+let W,H; const DPR=window.devicePixelRatio||1;
+function resize(){W=innerWidth;H=innerHeight;cv.width=W*DPR;cv.height=H*DPR;
+  cv.style.width=W+'px';cv.style.height=H+'px';cx.setTransform(DPR,0,0,DPR,0,0);}
+resize();
+let cam={x:W/2,y:H/2,zoom:1};
+function w2s(x,y){return{x:x*cam.zoom+cam.x, y:y*cam.zoom+cam.y}}
+function s2w(x,y){return{x:(x-cam.x)/cam.zoom, y:(y-cam.y)/cam.zoom}}
+function fit(){
+  const ids=Object.keys(G.nodes); if(!ids.length){cam={x:W/2,y:H/2,zoom:1};return;}
+  let x0=Infinity,x1=-Infinity,y0=Infinity,y1=-Infinity;
+  ids.forEach(id=>{const n=G.nodes[id];x0=Math.min(x0,n.x);x1=Math.max(x1,n.x);y0=Math.min(y0,n.y);y1=Math.max(y1,n.y);});
+  const p=80; cam.zoom=Math.min((W-p*2)/((x1-x0)||1),(H-p*2)/((y1-y0)||1));
+  cam.zoom=Math.min(cam.zoom,2);
+  cam.x=W/2-(x0+x1)/2*cam.zoom; cam.y=H/2-(y0+y1)/2*cam.zoom;
+}
+addEventListener('resize',()=>{resize();});
+
+// ── Хит-тесты ────────────────────────────────────────────────────────────
+const NODE_R=11;
+function nodeAt(sx,sy){
+  let best=null,bd=NODE_R;
+  for(const id in G.nodes){const p=w2s(G.nodes[id].x,G.nodes[id].y);
+    const d=Math.hypot(sx-p.x,sy-p.y); if(d<bd){bd=d;best=id;}}
+  return best!=null?Number(best):null;
+}
+function edgeProject(sx,sy){  // ближайшее ребро + позиция вдоль него (s)
+  let best=null,bd=10;
+  for(const id in G.edges){const e=G.edges[id];
+    const a=w2s(G.nodes[e.a].x,G.nodes[e.a].y), b=w2s(G.nodes[e.b].x,G.nodes[e.b].y);
+    const dx=b.x-a.x,dy=b.y-a.y,L2=dx*dx+dy*dy||1;
+    let t=((sx-a.x)*dx+(sy-a.y)*dy)/L2; t=Math.max(0,Math.min(1,t));
+    const d=Math.hypot(sx-(a.x+dx*t), sy-(a.y+dy*t));
+    if(d<bd){bd=d;best={eid:Number(id), s:t};}}
+  return best;
+}
+function edgeAt(sx,sy){ const p=edgeProject(sx,sy); return p?p.eid:null; }
+function sensorWorld(s){ const e=G.edges[s.edge]; if(!e) return null;
+  const a=G.nodes[e.a], b=G.nodes[e.b]; if(!a||!b) return null;
+  return {x:a.x+(b.x-a.x)*s.position, y:a.y+(b.y-a.y)*s.position}; }
+function sensorAt(sx,sy){
+  let best=null,bd=12;
+  for(const id in G.sensors){const w=sensorWorld(G.sensors[id]); if(!w)continue;
+    const p=w2s(w.x,w.y),d=Math.hypot(sx-p.x,sy-p.y); if(d<bd){bd=d;best=Number(id);}}
+  return best;
+}
+
+// ── Взаимодействие ───────────────────────────────────────────────────────
+let action=null;  // {type:'pan'|'drag'|'edge', ...}
+let mouse={x:0,y:0};
+cv.addEventListener('mousedown',e=>{
+  if(e.button!==0) return;
+  const sx=e.clientX, sy=e.clientY; mouse={x:sx,y:sy};
+  const overNode=nodeAt(sx,sy);
+  const overSensor=overNode==null?sensorAt(sx,sy):null;
+  const overEdge=(overNode==null&&overSensor==null)?edgeAt(sx,sy):null;
+  if(!editMode){ // view: только пан + выбор для осмотра
+    if(overNode!=null) selectNode(overNode);
+    else if(overSensor!=null) selectSensor(overSensor);
+    else if(overEdge!=null) selectEdge(overEdge);
+    else { select(null); action={type:'pan',x:sx,y:sy}; }
+    return;
+  }
+  if(tool==='select'){
+    if(overNode!=null){ selectNode(overNode);
+      G.nodes[overNode]._pin=true; action={type:'drag',id:overNode,moved:false}; }
+    else if(overSensor!=null){ selectSensor(overSensor); action={type:'pan',x:sx,y:sy}; }
+    else if(overEdge!=null){ selectEdge(overEdge); action={type:'pan',x:sx,y:sy}; }
+    else { select(null); action={type:'pan',x:sx,y:sy}; }
+  } else if(tool==='node'){
+    const w=s2w(sx,sy); const id=addNode(w.x,w.y); selectNode(id);
+  } else if(tool==='edge'){
+    if(overNode!=null) action={type:'edge',from:overNode};
+    else action={type:'pan',x:sx,y:sy};
+  } else if(tool==='sensor'){
+    const hit=edgeProject(sx,sy);
+    if(hit){ const id=addSensor(hit.eid, +hit.s.toFixed(3)); selectSensor(id); }
+    else action={type:'pan',x:sx,y:sy};
+  } else if(tool==='delete'){
+    if(overNode!=null){ removeNode(overNode); select(null); }
+    else if(overSensor!=null){ removeSensor(overSensor); select(null); }
+    else if(overEdge!=null){ removeEdge(overEdge); select(null); }
+  }
+});
+addEventListener('mousemove',e=>{
+  const sx=e.clientX, sy=e.clientY;
+  if(!action){mouse={x:sx,y:sy};return;}
+  if(action.type==='pan'){ cam.x+=sx-mouse.x; cam.y+=sy-mouse.y; }
+  else if(action.type==='drag'){ const w=s2w(sx,sy); const n=G.nodes[action.id];
+    n.x=w.x; n.y=w.y; action.moved=true; if(sel&&sel.type==='node'&&sel.id===action.id) renderProps(); }
+  else if(action.type==='edge'){ /* rubber-band рисуется в draw */ }
+  mouse={x:sx,y:sy};
+});
+addEventListener('mouseup',e=>{
+  if(!action){return;}
+  const sx=e.clientX, sy=e.clientY;
+  if(action.type==='drag'){ const n=G.nodes[action.id]; if(n) n._pin=false; }
+  else if(action.type==='edge'){
+    const to=nodeAt(sx,sy);
+    if(to!=null && to!==action.from){ const id=addEdge(action.from,to); if(id!=null) selectEdge(id); }
+  }
+  action=null;
+});
+cv.addEventListener('wheel',e=>{e.preventDefault();const f=e.deltaY<0?1.15:1/1.15;
+  cam.x=e.clientX-(e.clientX-cam.x)*f; cam.y=e.clientY-(e.clientY-cam.y)*f; cam.zoom*=f;},{passive:false});
+
+// ── Пружинная релаксация (position-based) ────────────────────────────────
+function relax(){
+  if(!springs) return;
+  for(let it=0;it<3;it++){
+    for(const id in G.edges){
+      const e=G.edges[id], a=G.nodes[e.a], b=G.nodes[e.b];
+      let dx=b.x-a.x, dy=b.y-a.y, d=Math.hypot(dx,dy)||1e-6;
+      const corr=(d-e.length)/d*0.5*0.18;   // доля исправления ошибки длины
+      const mx=dx*corr, my=dy*corr;
+      if(!a._pin){a.x+=mx; a.y+=my;}
+      if(!b._pin){b.x-=mx; b.y-=my;}
+    }
+  }
+}
+
+// ── Отрисовка ────────────────────────────────────────────────────────────
+function draw(){
+  relax();
+  cx.clearRect(0,0,W,H);
+  const z=cam.zoom;
+  // рёбра
+  for(const id in G.edges){const e=G.edges[id];
+    const a=w2s(G.nodes[e.a].x,G.nodes[e.a].y), b=w2s(G.nodes[e.b].x,G.nodes[e.b].y);
+    const selE=sel&&sel.type==='edge'&&sel.id==id;
+    cx.beginPath();cx.moveTo(a.x,a.y);cx.lineTo(b.x,b.y);
+    cx.strokeStyle=selE?'#f1c40f':'rgba(120,140,180,.55)';
+    cx.lineWidth=selE?3.5:2.5; cx.stroke();
+    // длина + имя
+    cx.font='11px system-ui'; cx.fillStyle=selE?'#f1c40f':'rgba(140,160,200,.7)'; cx.textAlign='center';
+    cx.fillText(`${e.name} · ${e.length}`, (a.x+b.x)/2, (a.y+b.y)/2-7);
+  }
+  // датчики
+  for(const id in G.sensors){const s=G.sensors[id]; const w=sensorWorld(s); if(!w)continue;
+    const p=w2s(w.x,w.y); const selS=sel&&sel.type==='sensor'&&sel.id==id; const r=6;
+    cx.beginPath();cx.moveTo(p.x,p.y-r);cx.lineTo(p.x+r,p.y);cx.lineTo(p.x,p.y+r);cx.lineTo(p.x-r,p.y);cx.closePath();
+    cx.fillStyle=selS?'#f1c40f':'rgba(241,196,15,.65)';cx.fill();
+    cx.strokeStyle=selS?'#fff':'#f39c12';cx.lineWidth=selS?2:1.2;cx.stroke();
+    cx.font='10px system-ui';cx.fillStyle='#d8a52f';cx.textAlign='center';cx.fillText(s.name,p.x,p.y-r-3);
+  }
+  // ребро-резинка
+  if(action&&action.type==='edge'){
+    const a=w2s(G.nodes[action.from].x,G.nodes[action.from].y);
+    cx.beginPath();cx.moveTo(a.x,a.y);cx.lineTo(mouse.x,mouse.y);
+    cx.strokeStyle='#3498db';cx.lineWidth=2;cx.setLineDash([6,5]);cx.stroke();cx.setLineDash([]);
+  }
+  // узлы
+  for(const id in G.nodes){const n=G.nodes[id]; const p=w2s(n.x,n.y);
+    const deg=nodeDegree(id);
+    const selN=sel&&sel.type==='node'&&sel.id==id;
+    const sz=9;
+    cx.beginPath();
+    if(n.kind==='switch'){cx.moveTo(p.x,p.y-sz);cx.lineTo(p.x+sz,p.y);cx.lineTo(p.x,p.y+sz);cx.lineTo(p.x-sz,p.y);cx.closePath();cx.fillStyle='rgba(46,204,113,.7)';}
+    else if(deg<=1){cx.rect(p.x-sz*.8,p.y-sz*.8,sz*1.6,sz*1.6);cx.fillStyle='rgba(231,76,60,.6)';}
+    else{cx.arc(p.x,p.y,sz*.85,0,7);cx.fillStyle='rgba(52,152,219,.65)';}
+    cx.fill();
+    cx.strokeStyle=selN?'#fff':'rgba(200,214,229,.5)';cx.lineWidth=selN?2.5:1.4;cx.stroke();
+    cx.font='11px system-ui';cx.fillStyle='#9fb0c6';cx.textAlign='center';
+    cx.fillText(n.name, p.x, p.y-sz-4);
+    // подпись портов стрелки
+    if(n.kind==='switch' && z>0.25 && n.ports){
+      const roleLabel=(eid)=> n.ports.point==eid?'P':(n.ports.straight==eid?'S':(n.ports.branch==eid?'B':''));
+      incidentEdges(id).forEach(e=>{ const o=e.a==id?e.b:e.a; const op=w2s(G.nodes[o].x,G.nodes[o].y);
+        const mx=p.x+(op.x-p.x)*0.22, my=p.y+(op.y-p.y)*0.22;
+        cx.fillStyle='#2ecc71';cx.font='bold 10px system-ui';cx.fillText(roleLabel(e.id), mx, my);});
+    }
+  }
+  requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+
+// ── Выбор и панель свойств ───────────────────────────────────────────────
+function select(s){ sel=s; renderProps(); }
+function selectNode(id){ select({type:'node', id}); }
+function selectEdge(id){ select({type:'edge', id}); }
+function selectSensor(id){ select({type:'sensor', id}); }
+
+const props=document.getElementById('props');
+function renderProps(){
+  if(!sel){ props.className=''; props.innerHTML=''; return; }
+  props.className='show';
+  if(sel.type==='node'){
+    const n=G.nodes[sel.id]; if(!n){select(null);return;}
+    const deg=nodeDegree(sel.id);
+    let h=`<h4>Точка <span class="kind ${n.kind==='switch'?'sw':'nd'}">${n.kind==='switch'?'СТРЕЛКА':'точка'}</span></h4>`;
+    h+=`<label>Имя</label><input id="p_name" value="${n.name}">`;
+    h+=`<label>Координаты</label><input id="p_xy" value="${n.x.toFixed(1)}, ${n.y.toFixed(1)}" disabled>`;
+    h+=`<label>Рёбер: ${deg}</label>`;
+    if(n.kind==='switch' && n.ports){
+      const inc=incidentEdges(sel.id);
+      const opt=(selId)=>inc.map(e=>`<option value="${e.id}" ${e.id==selId?'selected':''}>${e.name}</option>`).join('');
+      h+=`<label>POINT (общий вход)</label><select id="p_point">${opt(n.ports.point)}</select>`;
+      h+=`<label>STRAIGHT (прямо)</label><select id="p_straight">${opt(n.ports.straight)}</select>`;
+      h+=`<label>BRANCH (ответвление, авто)</label><input id="p_branch" value="${edgeName(n.ports.branch)}" disabled>`;
+    }
+    h+=`<div style="margin-top:12px"><button class="btn red" id="p_del">Удалить точку</button></div>`;
+    props.innerHTML=h;
+    document.getElementById('p_name').oninput=ev=>{n.name=ev.target.value;};
+    document.getElementById('p_del').onclick=()=>{removeNode(sel.id);select(null);};
+    if(n.kind==='switch'){
+      document.getElementById('p_point').onchange=ev=>setSwitchPorts(n, +ev.target.value, +document.getElementById('p_straight').value);
+      document.getElementById('p_straight').onchange=ev=>setSwitchPorts(n, +document.getElementById('p_point').value, +ev.target.value);
+    }
+  } else if(sel.type==='sensor'){
+    const s=G.sensors[sel.id]; if(!s){select(null);return;}
+    const e=G.edges[s.edge];
+    let h=`<h4>Датчик</h4>`;
+    h+=`<label>Имя</label><input id="s_name" value="${s.name}">`;
+    h+=`<label>Ребро</label><input value="${e?e.name:('e'+s.edge)}" disabled>`;
+    h+=`<label>Позиция вдоль ребра (0..1)</label><input id="s_pos" type="number" min="0" max="1" step="0.01" value="${s.position}">`;
+    h+=`<label>Радиус коррекции (м, по путям)</label><input id="s_rad" type="number" min="0" step="1" value="${s.radius}">`;
+    h+=`<div style="margin-top:12px"><button class="btn red" id="s_del">Удалить датчик</button></div>`;
+    props.innerHTML=h;
+    document.getElementById('s_name').oninput=ev=>{s.name=ev.target.value;};
+    document.getElementById('s_pos').oninput=ev=>{let v=parseFloat(ev.target.value); if(!isNaN(v)) s.position=Math.max(0,Math.min(1,v));};
+    document.getElementById('s_rad').oninput=ev=>{let v=parseFloat(ev.target.value); if(v>=0) s.radius=v;};
+    document.getElementById('s_del').onclick=()=>{removeSensor(sel.id);select(null);};
+  } else {
+    const e=G.edges[sel.id]; if(!e){select(null);return;}
+    let h=`<h4>Ребро</h4>`;
+    h+=`<label>Имя</label><input id="e_name" value="${e.name}">`;
+    h+=`<label>Длина (м) — стягивает/расталкивает точки</label><input id="e_len" type="number" min="1" step="1" value="${e.length}">`;
+    h+=`<label>Концы</label><input value="${G.nodes[e.a].name} ↔ ${G.nodes[e.b].name}" disabled>`;
+    h+=`<div style="margin-top:12px"><button class="btn red" id="e_del">Удалить ребро</button></div>`;
+    props.innerHTML=h;
+    document.getElementById('e_name').oninput=ev=>{e.name=ev.target.value;};
+    document.getElementById('e_len').oninput=ev=>{const v=parseFloat(ev.target.value); if(v>0) e.length=v;};
+    document.getElementById('e_del').onclick=()=>{removeEdge(sel.id);select(null);};
+  }
+}
+function edgeName(id){const e=G.edges[id];return e?e.name:'—';}
+function setSwitchPorts(n, point, straight){
+  if(point===straight){ // нельзя одинаковые — сдвинем straight на другое
+    const inc=incidentEdges(n.id).map(e=>e.id).filter(x=>x!==point);
+    straight=inc[0];
+  }
+  const all=incidentEdges(n.id).map(e=>e.id);
+  const branch=all.find(x=>x!==point && x!==straight);
+  n.ports={point, straight, branch};
+  renderProps();
+}
+
+// ── Тулбар ───────────────────────────────────────────────────────────────
+const status=document.getElementById('status');
+function setStatus(t, cls){status.textContent=t; status.className=cls||'';}
+document.querySelectorAll('.tool').forEach(b=>b.onclick=()=>{
+  tool=b.dataset.tool;
+  document.querySelectorAll('.tool').forEach(x=>x.classList.toggle('on',x===b));
+  updateHint();
+});
+document.getElementById('springs').onclick=function(){springs=!springs;this.classList.toggle('on',springs);updateHint();};
+document.getElementById('mode').onclick=function(){
+  editMode=!editMode; this.textContent=editMode?'Edit':'View'; this.classList.toggle('on',editMode);
+  document.getElementById('tools').classList.toggle('hidden',!editMode);
+  if(!editMode) select(null);
+  updateHint();
+};
+function updateHint(){
+  const hint=document.getElementById('hint');
+  if(!editMode){hint.textContent='View: осмотр (пан колёсиком/перетаскиванием, клик — свойства). Кнопка Edit — редактирование.';return;}
+  const t={select:'Выбор: тащи точку — двигать; клик по ребру/датчику — свойства.',
+    node:'Точка: клик по пустому месту — поставить точку.',
+    edge:'Ребро: зажми на точке и отпусти на другой — соединить.',
+    sensor:'Датчик: клик по ребру — поставить датчик в этой точке.',
+    delete:'Удалить: клик по точке, ребру или датчику.'}[tool];
+  hint.textContent=t+(springs?' · Пружины ВКЛ: длина ребра двигает точки.':' · Пружины выкл.');
+}
+
+// ── Импорт / экспорт ─────────────────────────────────────────────────────
+function graphJSON(withCoords){
+  const nodes=Object.values(G.nodes).map(n=>{
+    const o={id:n.id, name:n.name, kind:n.kind};
+    if(n.kind==='switch'&&n.ports) o.ports={point:n.ports.point, straight:n.ports.straight, branch:n.ports.branch};
+    if(withCoords){o.x=+n.x.toFixed(2); o.y=+n.y.toFixed(2);}
+    return o;
+  });
+  const edges=Object.values(G.edges).map(e=>({id:e.id,a:e.a,b:e.b,length:e.length,name:e.name}));
+  const sensors=Object.values(G.sensors).map(s=>({id:s.id,edge:s.edge,position:s.position,name:s.name,radius:s.radius}));
+  return {version:1, nodes, edges, sensors};
+}
+function download(obj, fname){
+  const blob=new Blob([JSON.stringify(obj,null,2)],{type:'application/json'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=fname; a.click();
+  URL.revokeObjectURL(a.href);
+}
+document.getElementById('exp_graph').onclick=()=>download(graphJSON(false),'graph.json');
+document.getElementById('exp_map').onclick=()=>download(graphJSON(true),'graph_map.json');
+document.getElementById('imp').onclick=()=>document.getElementById('impfile').click();
+document.getElementById('impfile').onchange=ev=>{
+  const f=ev.target.files[0]; if(!f) return;
+  const r=new FileReader(); r.onload=()=>{ try{ loadGraph(JSON.parse(r.result)); setStatus('Импортировано','ok'); }
+    catch(err){ setStatus('Ошибка импорта: '+err.message,'err'); } };
+  r.readAsText(f); ev.target.value='';
+};
+
+function loadGraph(g){
+  G={nodes:{}, edges:{}, sensors:{}};
+  const hasCoords=(g.nodes||[]).some(n=>n.x!=null&&n.y!=null);
+  (g.nodes||[]).forEach(n=>{ G.nodes[n.id]={id:n.id, name:n.name||('n'+n.id),
+    x:n.x!=null?n.x:(Math.random()-0.5)*400, y:n.y!=null?n.y:(Math.random()-0.5)*400,
+    kind:n.kind||'node'}; if(n.kind==='switch'&&n.ports) G.nodes[n.id].ports={...n.ports}; });
+  (g.edges||[]).forEach(e=>{ G.edges[e.id]={id:e.id, a:e.a, b:e.b,
+    length:e.length!=null?e.length:100, name:e.name||('e'+e.id)}; });
+  (g.sensors||[]).forEach(s=>{ G.sensors[s.id]={id:s.id, edge:s.edge,
+    position:s.position!=null?s.position:0.5, name:s.name||('S'+s.id),
+    radius:s.radius!=null?s.radius:20}; });
+  recalcIds();
+  Object.keys(G.nodes).forEach(id=>reclassify(Number(id)));
+  select(null);
+  // координаты есть → сохраняем положение (пружины выкл); нет → раскладываем
+  springs=!hasCoords; document.getElementById('springs').classList.toggle('on',springs);
+  if(!hasCoords) autoLayout();
+  fit(); updateHint();
+}
+
+// Быстрая силовая раскладка, если координат нет.
+function autoLayout(){
+  const ids=Object.keys(G.nodes).map(Number);
+  ids.forEach(id=>{const n=G.nodes[id];n.x=(Math.random()-0.5)*400;n.y=(Math.random()-0.5)*400;});
+  for(let it=0;it<400;it++){
+    // отталкивание
+    for(let i=0;i<ids.length;i++)for(let j=i+1;j<ids.length;j++){
+      const a=G.nodes[ids[i]],b=G.nodes[ids[j]];let dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy)||1;
+      let f=4000/(d*d); a.x-=dx/d*f;a.y-=dy/d*f;b.x+=dx/d*f;b.y+=dy/d*f;}
+    // пружины к длине
+    for(const e in G.edges){const ed=G.edges[e],a=G.nodes[ed.a],b=G.nodes[ed.b];
+      let dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy)||1,f=(d-ed.length)*0.05;
+      a.x+=dx/d*f;a.y+=dy/d*f;b.x-=dx/d*f;b.y-=dy/d*f;}
+  }
+}
+
+// ── Связь с сервером (Применить / Отменить) ──────────────────────────────
+let ws=null;
+function connect(){
+  ws=new WebSocket(`ws://${location.host}/ws`);
+  ws.onmessage=e=>{const m=JSON.parse(e.data);
+    if(m.type==='error') setStatus('Сервер: '+m.message,'err'); };
+  ws.onclose=()=>setTimeout(connect,1000);
+}
+connect();
+document.getElementById('apply').onclick=()=>{
+  if(!ws||ws.readyState!==1){setStatus('Нет связи с сервером','err');return;}
+  try{ ws.send(JSON.stringify({cmd:'apply_graph', graph:graphJSON(true)}));
+       setStatus('Применено в монитор ✓','ok'); }
+  catch(err){ setStatus('Ошибка: '+err.message,'err'); }
+};
+document.getElementById('cancel').onclick=()=>loadFromServer();
+
+function loadFromServer(){
+  fetch('/graph').then(r=>r.json()).then(g=>{
+    if(!g.nodes||!g.nodes.length){ G={nodes:{},edges:{}}; recalcIds(); fit(); setStatus('Пустой граф — начните с нуля',''); }
+    else { loadGraph(g); setStatus('Загружено из монитора',''); }
+  }).catch(err=>setStatus('Не удалось загрузить: '+err.message,'err'));
+}
+
+// Инициализация
+loadFromServer();
+updateHint();
+</script></body></html>

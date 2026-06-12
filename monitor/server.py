@@ -61,9 +61,12 @@ class MonitorServer:
 
     def apply_graph(self, graph):
         """Заменяет живой граф на отредактированный (кнопка «Применить»).
-        Пересобирает Topology + LayoutState; поезда сбрасываются, датчики
-        переносятся из графа."""
+        Пересобирает Topology + LayoutState; датчики переносятся из графа.
+        Поезда стараемся сохранить: если ребро под ГОЛОВОЙ поезда уцелело
+        (id ребра редактора совпадает со старым), переносим поезд на новое ребро
+        с той же позицией головы, скоростью и направлением."""
         from monitor.graph_io import graph_to_topology
+        old_trains = list(self.state.trains.values())
         topo, coords, edge_map = graph_to_topology(graph)
         state = LayoutState(topo)
         for s in graph.get('sensors', []):
@@ -73,11 +76,24 @@ class MonitorServer:
             state.add_sensor(s['id'], teid, float(s['position']),
                              name=s.get('name', ''),
                              radius=float(s.get('radius', 20.0)))
+        # Перенос поездов по голове (edge_map ключуется id рёбер редактора,
+        # которые для уцелевших рёбер совпадают со старыми id топологии).
+        for lt in old_trains:
+            new_eid = edge_map.get(lt.edge_id)
+            if new_eid is None:
+                continue            # ребро под головой удалено — поезд не переносим
+            nt = state.place_train(lt.id, lt.train, new_eid, lt.s,
+                                   direction=lt.direction, color=lt.color, name=lt.name)
+            nt.face = lt.face
+            nt.v = lt.v
+            nt.v_target = lt.v_target
+            nt.accel = lt.accel
+            nt.decel = lt.decel
         self.state = state
         self.topo = topo
         self.topo_json = _ser_topo(topo)
         self.coords = coords or None
-        self._next_train_id = 1
+        self._next_train_id = max(state.trains, default=0) + 1
 
     # ── Тик-цикл ──────────────────────────────────────────────────────────
     async def run_loop(self):

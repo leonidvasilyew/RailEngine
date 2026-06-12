@@ -36,7 +36,7 @@ class Sensor:
     корректируется ближайший поезд, голова которого в этом радиусе."""
     __slots__ = ('id', 'edge_id', 'position', 'name', 'radius')
 
-    def __init__(self, sensor_id, edge_id, position, name='', radius=20.0):
+    def __init__(self, sensor_id, edge_id, position, name='', radius=50.0):
         self.id = sensor_id
         self.edge_id = edge_id
         self.position = position

@@ -1,0 +1,260 @@
+{
+  "version": 1,
+  "nodes": [
+    {
+      "id": 0,
+      "name": "A",
+      "kind": "node"
+    },
+    {
+      "id": 1,
+      "name": "C1",
+      "kind": "switch",
+      "ports": {
+        "point": 11,
+        "straight": 9,
+        "branch": 1
+      }
+    },
+    {
+      "id": 2,
+      "name": "C2",
+      "kind": "switch",
+      "ports": {
+        "point": 12,
+        "straight": 10,
+        "branch": 2
+      }
+    },
+    {
+      "id": 3,
+      "name": "SW",
+      "kind": "switch",
+      "ports": {
+        "point": 0,
+        "straight": 2,
+        "branch": 1
+      }
+    },
+    {
+      "id": 4,
+      "name": "n4",
+      "kind": "node"
+    },
+    {
+      "id": 5,
+      "name": "n5",
+      "kind": "node"
+    },
+    {
+      "id": 6,
+      "name": "n6",
+      "kind": "switch",
+      "ports": {
+        "point": 5,
+        "straight": 4,
+        "branch": 8
+      }
+    },
+    {
+      "id": 7,
+      "name": "n7",
+      "kind": "node"
+    },
+    {
+      "id": 8,
+      "name": "n8",
+      "kind": "node"
+    },
+    {
+      "id": 9,
+      "name": "n9",
+      "kind": "node"
+    },
+    {
+      "id": 10,
+      "name": "n12",
+      "kind": "node"
+    },
+    {
+      "id": 11,
+      "name": "n13",
+      "kind": "switch",
+      "ports": {
+        "point": 15,
+        "straight": 11,
+        "branch": 14
+      }
+    },
+    {
+      "id": 12,
+      "name": "n14",
+      "kind": "node"
+    },
+    {
+      "id": 13,
+      "name": "n15",
+      "kind": "node"
+    },
+    {
+      "id": 14,
+      "name": "n16",
+      "kind": "switch",
+      "ports": {
+        "point": 15,
+        "straight": 16,
+        "branch": 17
+      }
+    },
+    {
+      "id": 15,
+      "name": "n17",
+      "kind": "node"
+    },
+    {
+      "id": 16,
+      "name": "n18",
+      "kind": "node"
+    },
+    {
+      "id": 17,
+      "name": "n19",
+      "kind": "node"
+    }
+  ],
+  "edges": [
+    {
+      "id": 0,
+      "a": 0,
+      "b": 3,
+      "length": 100,
+      "name": "0"
+    },
+    {
+      "id": 1,
+      "a": 3,
+      "b": 1,
+      "length": 25,
+      "name": "1"
+    },
+    {
+      "id": 2,
+      "a": 3,
+      "b": 2,
+      "length": 25,
+      "name": "2"
+    },
+    {
+      "id": 3,
+      "a": 4,
+      "b": 5,
+      "length": 95,
+      "name": "e3"
+    },
+    {
+      "id": 4,
+      "a": 5,
+      "b": 6,
+      "length": 42,
+      "name": "e4"
+    },
+    {
+      "id": 5,
+      "a": 6,
+      "b": 7,
+      "length": 65,
+      "name": "e5"
+    },
+    {
+      "id": 6,
+      "a": 7,
+      "b": 8,
+      "length": 44,
+      "name": "e6"
+    },
+    {
+      "id": 7,
+      "a": 8,
+      "b": 9,
+      "length": 120,
+      "name": "e7"
+    },
+    {
+      "id": 8,
+      "a": 6,
+      "b": 10,
+      "length": 35,
+      "name": "e8"
+    },
+    {
+      "id": 9,
+      "a": 10,
+      "b": 1,
+      "length": 128,
+      "name": "e9"
+    },
+    {
+      "id": 10,
+      "a": 4,
+      "b": 2,
+      "length": 33,
+      "name": "e10"
+    },
+    {
+      "id": 11,
+      "a": 1,
+      "b": 11,
+      "length": 100,
+      "name": "e11"
+    },
+    {
+      "id": 12,
+      "a": 2,
+      "b": 13,
+      "length": 33,
+      "name": "e12"
+    },
+    {
+      "id": 13,
+      "a": 13,
+      "b": 12,
+      "length": 81,
+      "name": "e13"
+    },
+    {
+      "id": 14,
+      "a": 12,
+      "b": 11,
+      "length": 29,
+      "name": "e14"
+    },
+    {
+      "id": 15,
+      "a": 11,
+      "b": 14,
+      "length": 71,
+      "name": "e15"
+    },
+    {
+      "id": 16,
+      "a": 14,
+      "b": 15,
+      "length": 26,
+      "name": "e16"
+    },
+    {
+      "id": 17,
+      "a": 14,
+      "b": 17,
+      "length": 90,
+      "name": "e17"
+    },
+    {
+      "id": 18,
+      "a": 15,
+      "b": 16,
+      "length": 84,
+      "name": "e18"
+    }
+  ]
+}

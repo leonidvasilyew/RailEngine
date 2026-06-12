@@ -34,7 +34,6 @@ canvas{display:block;width:100%;height:100%;touch-action:none}
 </style></head><body>
 <div id="topbar">
   <a class="btn" href="/" title="К монитору">▶ Монитор</a>
-  <button class="btn" id="mode">Edit</button>
   <div id="tools">
     <button class="btn tool on" data-tool="select" title="Выбор/перемещение">⬚ Выбор</button>
     <button class="btn tool" data-tool="node" title="Поставить точку">＋ Точка</button>
@@ -48,10 +47,10 @@ canvas{display:block;width:100%;height:100%;touch-action:none}
   <button class="btn green" id="apply" title="Загрузить граф в монитор">✓ Применить</button>
   <button class="btn" id="cancel" title="Откатить к текущему графу монитора">↶ Отменить</button>
   <span class="sep"></span>
-  <button class="btn" id="exp_graph" title="Экспорт структуры графа">⬇ Граф</button>
-  <button class="btn" id="exp_map" title="Экспорт графа с координатами">⬇ Граф+коорд</button>
-  <button class="btn" id="imp" title="Импорт JSON">⬆ Импорт</button>
-  <input type="file" id="impfile" accept="application/json" style="display:none">
+  <button class="btn" id="exp_map" title="Сохранить карту (с координатами) через проводник">⬇ Карта</button>
+  <button class="btn" id="exp_graph" title="Сохранить граф (без координат) через проводник">⬇ Граф</button>
+  <button class="btn" id="imp" title="Открыть JSON через проводник">⬆ Открыть</button>
+  <input type="file" id="impfile" accept="application/json,.json" style="display:none">
   <span id="status"></span>
 </div>
 
@@ -176,6 +175,26 @@ function edgeAt(sx,sy){ const p=edgeProject(sx,sy); return p?p.eid:null; }
 function sensorWorld(s){ const e=G.edges[s.edge]; if(!e) return null;
   const a=G.nodes[e.a], b=G.nodes[e.b]; if(!a||!b) return null;
   return {x:a.x+(b.x-a.x)*s.position, y:a.y+(b.y-a.y)*s.position}; }
+// Зона действия датчика — участки рёбер в радиусе R метров ВДОЛЬ путей (через
+// узлы, без учёта стрелок — как на сервере). Возвращает [{eid,s0,s1}].
+function sensorReach(s){
+  const e0=G.edges[s.edge]; if(!e0) return [];
+  const R=s.radius||0, L0=e0.length||1, segs=[], visited=new Set([+s.edge]);
+  const dA=s.position*L0, dB=(1-s.position)*L0;
+  segs.push({eid:+s.edge, s0:s.position-Math.min(R,dA)/L0, s1:s.position+Math.min(R,dB)/L0});
+  function spill(node, rem){
+    if(rem<=0) return;
+    for(const id in G.edges){ if(visited.has(+id)) continue;
+      const e=G.edges[id]; if(e.a!==node && e.b!==node) continue;
+      visited.add(+id); const L=e.length||1, cov=Math.min(rem,L)/L;
+      segs.push(e.a===node ? {eid:+id,s0:0,s1:cov} : {eid:+id,s0:1-cov,s1:1});
+      spill(e.a===node? e.b : e.a, rem-L);
+    }
+  }
+  if(R>dA) spill(e0.a, R-dA);
+  if(R>dB) spill(e0.b, R-dB);
+  return segs;
+}
 function sensorAt(sx,sy){
   let best=null,bd=12;
   for(const id in G.sensors){const w=sensorWorld(G.sensors[id]); if(!w)continue;
@@ -273,6 +292,18 @@ function draw(){
     cx.font='11px system-ui'; cx.fillStyle=selE?'#f1c40f':'rgba(140,160,200,.7)'; cx.textAlign='center';
     cx.fillText(`${e.name} · ${e.length}`, (a.x+b.x)/2, (a.y+b.y)/2-7);
   }
+  // зона действия выбранного датчика (по путям)
+  if(sel&&sel.type==='sensor'&&G.sensors[sel.id]){
+    cx.lineCap='round';
+    for(const seg of sensorReach(G.sensors[sel.id])){
+      const e=G.edges[seg.eid]; if(!e)continue; const na=G.nodes[e.a], nb=G.nodes[e.b]; if(!na||!nb)continue;
+      const p0=w2s(na.x+(nb.x-na.x)*seg.s0, na.y+(nb.y-na.y)*seg.s0);
+      const p1=w2s(na.x+(nb.x-na.x)*seg.s1, na.y+(nb.y-na.y)*seg.s1);
+      cx.beginPath();cx.moveTo(p0.x,p0.y);cx.lineTo(p1.x,p1.y);
+      cx.strokeStyle='rgba(241,196,15,.35)';cx.lineWidth=10;cx.stroke();
+    }
+    cx.lineCap='butt';
+  }
   // датчики
   for(const id in G.sensors){const s=G.sensors[id]; const w=sensorWorld(s); if(!w)continue;
     const p=w2s(w.x,w.y); const selS=sel&&sel.type==='sensor'&&sel.id==id; const r=6;
@@ -326,6 +357,7 @@ function renderProps(){
     const n=G.nodes[sel.id]; if(!n){select(null);return;}
     const deg=nodeDegree(sel.id);
     let h=`<h4>Точка <span class="kind ${n.kind==='switch'?'sw':'nd'}">${n.kind==='switch'?'СТРЕЛКА':'точка'}</span></h4>`;
+    h+=`<label>ID${n.kind==='switch'?' (= id управляющего датчика)':''}</label><input id="p_id" type="number" min="0" step="1" value="${n.id}">`;
     h+=`<label>Имя</label><input id="p_name" value="${n.name}">`;
     h+=`<label>Координаты</label><input id="p_xy" value="${n.x.toFixed(1)}, ${n.y.toFixed(1)}" disabled>`;
     h+=`<label>Рёбер: ${deg}</label>`;
@@ -338,6 +370,18 @@ function renderProps(){
     }
     h+=`<div style="margin-top:12px"><button class="btn red" id="p_del">Удалить точку</button></div>`;
     props.innerHTML=h;
+    // ID точки задаётся напрямую (для стрелки = id управляющего датчика, тогда
+    // @SIG этого датчика рулит этой стрелкой без маппинга). Рёбра переносим.
+    document.getElementById('p_id').onchange=ev=>{
+      const nid=parseInt(ev.target.value,10);
+      if(isNaN(nid)||nid<0){ ev.target.value=n.id; return; }
+      if(nid===n.id) return;
+      if(G.nodes[nid]){ setStatus('ID '+nid+' уже занят другой точкой','err'); ev.target.value=n.id; return; }
+      const old=n.id;
+      delete G.nodes[old]; n.id=nid; G.nodes[nid]=n;
+      for(const eid in G.edges){ const e=G.edges[eid]; if(e.a===old)e.a=nid; if(e.b===old)e.b=nid; }
+      sel.id=nid; recalcIds(); renderProps();
+    };
     document.getElementById('p_name').oninput=ev=>{n.name=ev.target.value;};
     document.getElementById('p_del').onclick=()=>{removeNode(sel.id);select(null);};
     if(n.kind==='switch'){
@@ -348,12 +392,21 @@ function renderProps(){
     const s=G.sensors[sel.id]; if(!s){select(null);return;}
     const e=G.edges[s.edge];
     let h=`<h4>Датчик</h4>`;
+    h+=`<label>ID (= физический uint16 датчика)</label><input id="s_id" type="number" min="0" step="1" value="${s.id}">`;
     h+=`<label>Имя</label><input id="s_name" value="${s.name}">`;
     h+=`<label>Ребро</label><input value="${e?e.name:('e'+s.edge)}" disabled>`;
     h+=`<label>Позиция вдоль ребра (0..1)</label><input id="s_pos" type="number" min="0" max="1" step="0.01" value="${s.position}">`;
     h+=`<label>Радиус коррекции (м, по путям)</label><input id="s_rad" type="number" min="0" step="1" value="${s.radius}">`;
     h+=`<div style="margin-top:12px"><button class="btn red" id="s_del">Удалить датчик</button></div>`;
     props.innerHTML=h;
+    // ID можно задать = реальному id датчика — тогда мост работает без маппинга.
+    document.getElementById('s_id').onchange=ev=>{
+      const nid=parseInt(ev.target.value,10);
+      if(isNaN(nid)||nid<0){ ev.target.value=s.id; return; }
+      if(nid===s.id) return;
+      if(G.sensors[nid]){ setStatus('ID '+nid+' уже занят другим датчиком','err'); ev.target.value=s.id; return; }
+      delete G.sensors[s.id]; s.id=nid; G.sensors[nid]=s; sel.id=nid; recalcIds(); renderProps();
+    };
     document.getElementById('s_name').oninput=ev=>{s.name=ev.target.value;};
     document.getElementById('s_pos').oninput=ev=>{let v=parseFloat(ev.target.value); if(!isNaN(v)) s.position=Math.max(0,Math.min(1,v));};
     document.getElementById('s_rad').oninput=ev=>{let v=parseFloat(ev.target.value); if(v>=0) s.radius=v;};
@@ -392,15 +445,8 @@ document.querySelectorAll('.tool').forEach(b=>b.onclick=()=>{
   updateHint();
 });
 document.getElementById('springs').onclick=function(){springs=!springs;this.classList.toggle('on',springs);updateHint();};
-document.getElementById('mode').onclick=function(){
-  editMode=!editMode; this.textContent=editMode?'Edit':'View'; this.classList.toggle('on',editMode);
-  document.getElementById('tools').classList.toggle('hidden',!editMode);
-  if(!editMode) select(null);
-  updateHint();
-};
 function updateHint(){
   const hint=document.getElementById('hint');
-  if(!editMode){hint.textContent='View: осмотр (пан колёсиком/перетаскиванием, клик — свойства). Кнопка Edit — редактирование.';return;}
   const t={select:'Выбор: тащи точку — двигать; клик по ребру/датчику — свойства.',
     node:'Точка: клик по пустому месту — поставить точку.',
     edge:'Ребро: зажми на точке и отпусти на другой — соединить.',
@@ -421,18 +467,45 @@ function graphJSON(withCoords){
   const sensors=Object.values(G.sensors).map(s=>({id:s.id,edge:s.edge,position:s.position,name:s.name,radius:s.radius}));
   return {version:1, nodes, edges, sensors};
 }
-function download(obj, fname){
-  const blob=new Blob([JSON.stringify(obj,null,2)],{type:'application/json'});
-  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=fname; a.click();
-  URL.revokeObjectURL(a.href);
+// Сохранение/открытие через нативный проводник (File System Access API).
+// Браузер запоминает последнюю папку — выбери monitor/maps один раз, дальше
+// диалог будет открываться там. Откат на обычную загрузку/файл-инпут, если
+// API недоступен (напр. Firefox).
+const JSON_TYPES=[{description:'JSON', accept:{'application/json':['.json']}}];
+async function exportGraph(withCoords, suggested){
+  const text=JSON.stringify(graphJSON(withCoords), null, 2);
+  if(window.showSaveFilePicker){
+    try{
+      const h=await window.showSaveFilePicker({suggestedName:suggested, types:JSON_TYPES});
+      const w=await h.createWritable(); await w.write(text); await w.close();
+      setStatus('Сохранено: '+h.name,'ok');
+    }catch(e){ if(e.name!=='AbortError') setStatus('Ошибка: '+e.message,'err'); }
+  } else {
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(new Blob([text],{type:'application/json'}));
+    a.download=suggested; a.click(); URL.revokeObjectURL(a.href);
+    setStatus('Скачано: '+suggested,'ok');
+  }
 }
-document.getElementById('exp_graph').onclick=()=>download(graphJSON(false),'graph.json');
-document.getElementById('exp_map').onclick=()=>download(graphJSON(true),'graph_map.json');
-document.getElementById('imp').onclick=()=>document.getElementById('impfile').click();
+async function importGraph(){
+  if(window.showOpenFilePicker){
+    try{
+      const [h]=await window.showOpenFilePicker({types:JSON_TYPES});
+      const f=await h.getFile(); loadGraph(JSON.parse(await f.text()));
+      setStatus('Открыто: '+f.name,'ok');
+    }catch(e){ if(e.name!=='AbortError') setStatus('Ошибка: '+e.message,'err'); }
+  } else {
+    document.getElementById('impfile').click();
+  }
+}
+document.getElementById('exp_map').onclick=()=>exportGraph(true,'map.json');
+document.getElementById('exp_graph').onclick=()=>exportGraph(false,'graph.json');
+document.getElementById('imp').onclick=importGraph;
 document.getElementById('impfile').onchange=ev=>{
   const f=ev.target.files[0]; if(!f) return;
-  const r=new FileReader(); r.onload=()=>{ try{ loadGraph(JSON.parse(r.result)); setStatus('Импортировано','ok'); }
-    catch(err){ setStatus('Ошибка импорта: '+err.message,'err'); } };
+  const r=new FileReader();
+  r.onload=()=>{ try{ loadGraph(JSON.parse(r.result)); setStatus('Открыто: '+f.name,'ok'); }
+    catch(err){ setStatus('Ошибка: '+err.message,'err'); } };
   r.readAsText(f); ev.target.value='';
 };
 

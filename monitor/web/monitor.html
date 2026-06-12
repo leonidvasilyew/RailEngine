@@ -54,6 +54,7 @@ input[type=range]::-moz-range-track{background:transparent;height:8px}
   <h4>Добавить поезд</h4>
   <div class="card">
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+      id <input class="num" id="np_id" placeholder="авто" title="= физический uint16 id поезда (пусто = авто)">
       длина <input class="num" id="np_len" value="20">
       vmax <input class="num" id="np_vmax" value="12">
     </div>
@@ -189,6 +190,13 @@ cv.addEventListener('wheel',e=>{e.preventDefault();const f=e.deltaY<0?1.15:1/1.1
 function sToWorld(eid,s){const e=topo&&topo.edges[eid]; if(!e)return null;
   const a=pos[e.node_a],b=pos[e.node_b]; if(!a||!b)return null;
   return{x:a.x+(b.x-a.x)*s,y:a.y+(b.y-a.y)*s};}
+// Экранная точка на ребре eid на фикс. расстоянии lenPx от узла nid (но не далее
+// половины ребра) — для указателей стрелки фиксированной длины.
+function branchEnd(nid,ps,eid,lenPx){
+  const e=topo&&topo.edges[eid]; if(!e)return null;
+  const oid=(e.node_a===nid)?e.node_b:e.node_a; const op=pos[oid]; if(!op)return null;
+  const b=w2s(op.x,op.y); let dx=b.x-ps.x,dy=b.y-ps.y,Ls=Math.hypot(dx,dy)||1;
+  const L=Math.min(Ls*0.5,lenPx); return {x:ps.x+dx/Ls*L,y:ps.y+dy/Ls*L};}
 function nearestEdge(wx,wy){
   let best=null,bestD=Infinity;
   eids.forEach(eid=>{const e=topo.edges[eid],a=pos[e.node_a],b=pos[e.node_b];
@@ -223,10 +231,13 @@ function onClick(sx,sy){
   if(placing){
     const w=s2w(sx,sy),ne=nearestEdge(w.x,w.y);
     if(ne&&ne.d*cam.zoom<40){
-      send({cmd:'place_train',edge:ne.eid,position:ne.s,direction:placeDir,
+      const msg={cmd:'place_train',edge:ne.eid,position:ne.s,direction:placeDir,
         length:+document.getElementById('np_len').value,
         max_speed:+document.getElementById('np_vmax').value,
-        color:nextColor()});
+        color:nextColor()};
+      const idv=document.getElementById('np_id').value.trim();
+      if(idv!=='') msg.train=parseInt(idv,10);   // = физический id поезда, без маппинга
+      send(msg);
     }
     setPlacing(false);
     return;
@@ -275,14 +286,23 @@ function draw(){
     else if(n.port_count<=1){cx.rect(p.x-sz*.75,p.y-sz*.75,sz*1.5,sz*1.5);cx.fillStyle='rgba(231,76,60,.5)';}
     else{cx.arc(p.x,p.y,sz*.7,0,7);cx.fillStyle='rgba(52,152,219,.5)';}
     cx.fill();cx.strokeStyle='rgba(200,214,229,.4)';cx.lineWidth=1.5;cx.stroke();
-    // активная ветка стрелки
+    // активная ветка стрелки — зелёная линия фикс. длины (≤ половины ребра)
     if(n.type==='Switch' && (String(nid) in swState)){
-      const activePort=swState[nid]; // 1=STRAIGHT,2=BRANCH
-      const eid=n.edges[activePort];
-      const wp=eid>=0?sToWorld(eid,0.12):null;
-      if(wp){const tp=w2s(wp.x,wp.y);
-        cx.beginPath();cx.moveTo(p.x,p.y);cx.lineTo(tp.x,tp.y);
-        cx.strokeStyle='#2ecc71';cx.lineWidth=Math.max(2,3.5*z/2);cx.stroke();}
+      const eid=n.edges[swState[nid]];  // 1=STRAIGHT,2=BRANCH
+      const be=eid>=0?branchEnd(nid,p,eid,Math.max(16,24*z/2)):null;
+      if(be){cx.beginPath();cx.moveTo(p.x,p.y);cx.lineTo(be.x,be.y);
+        cx.strokeStyle='#3AB559';cx.lineWidth=Math.max(2,3.5*z/2);cx.stroke();}
+    }
+    // метки P/S/B у стрелки (мелкие, с чёрной обводкой — не сливаются с указателем)
+    if(n.type==='Switch' && z>.3){
+      const roles=['P','S','B'];
+      cx.textAlign='center';cx.textBaseline='middle';cx.lineJoin='round';
+      cx.font=`bold ${Math.max(6,5*z/2)}px system-ui`;
+      for(let pi=0;pi<3;pi++){const eid=n.edges[pi]; if(eid<0)continue;
+        const be=branchEnd(nid,p,eid,Math.max(12,16*z/2)); if(!be)continue;
+        cx.lineWidth=Math.max(2,2);cx.strokeStyle='#000';cx.strokeText(roles[pi],be.x,be.y);
+        cx.fillStyle='#2ecc71';cx.fillText(roles[pi],be.x,be.y);}
+      cx.textBaseline='alphabetic';
     }
     if(z>.3){cx.font=`${Math.max(8,11*z/2)}px system-ui`;cx.fillStyle='#8395a7';cx.textAlign='center';
       cx.fillText(n.name,p.x,p.y-sz-4);}});

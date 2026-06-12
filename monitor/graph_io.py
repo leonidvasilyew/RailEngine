@@ -27,7 +27,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from topology import Topology, Port      # noqa: E402
+from topology import Topology, Port, Node, Switch      # noqa: E402
 
 DEFAULT_SPEED = 10.0
 DEFAULT_LENGTH = 100.0
@@ -58,20 +58,22 @@ def graph_to_topology(graph):
     coords = {}
 
     for n in nodes:
-        eid = n['id']
-        deg = len(incident[eid])
-        name = n.get('name') or str(eid)
+        nid = int(n['id'])
+        deg = len(incident[nid])
+        name = n.get('name') or str(nid)
         kind = n.get('kind', 'node')
+        # Сохраняем id узла из редактора (НЕ авто) — чтобы id стрелки-узла можно
+        # было задать = id управляющего датчика (мост шлёт set_switch по нему).
         if kind == 'switch':
             if deg != 3:
                 raise ValueError(f"Стрелка '{name}' должна иметь ровно 3 ребра (сейчас {deg})")
-            _validate_switch_ports(n, incident[eid], name)
-            tid = topo.add_switch(name=name)
+            _validate_switch_ports(n, incident[nid], name)
+            topo.add_existing_node(Switch(nid, name=name))
         else:
-            tid = topo.add_node(port_count=deg, name=name)
-        id_map[eid] = tid
+            topo.add_existing_node(Node(nid, port_count=deg, name=name))
+        id_map[nid] = nid
         if n.get('x') is not None and n.get('y') is not None:
-            coords[tid] = [float(n['x']), float(n['y'])]
+            coords[nid] = [float(n['x']), float(n['y'])]
 
     edge_map = {}
     for e in edges:

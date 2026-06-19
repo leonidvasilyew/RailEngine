@@ -27,6 +27,7 @@ import argparse
 import asyncio
 import json
 import sys
+from datetime import datetime
 
 import websockets
 
@@ -48,6 +49,7 @@ def parse_line(line):
     """@-строку базы → команду монитора (dict) или None."""
     line = line.strip()
     if not line.startswith('@'):
+        print(datetime.now().time(), line)
         return None
     p = line.split()
     try:
